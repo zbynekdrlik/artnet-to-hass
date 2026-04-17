@@ -64,6 +64,9 @@ mod tests {
         }
         async fn turn_off(&self) -> anyhow::Result<()> {
             self.calls.lock().unwrap().push((Instant::now(), Call::Off));
+            if std::mem::replace(&mut *self.fail_next.lock().unwrap(), false) {
+                return Err(anyhow::anyhow!("mock failure"));
+            }
             Ok(())
         }
     }
