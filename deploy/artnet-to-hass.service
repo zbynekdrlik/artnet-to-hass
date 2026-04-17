@@ -1,0 +1,24 @@
+[Unit]
+Description=Art-Net to Home Assistant bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=artnet
+Group=artnet
+WorkingDirectory=/opt/artnet-to-hass
+EnvironmentFile=/opt/artnet-to-hass/.env
+ExecStart=/opt/artnet-to-hass/artnet-to-hass
+Restart=always
+RestartSec=5
+# Allow binding to port 6454 without root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/artnet-to-hass
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
