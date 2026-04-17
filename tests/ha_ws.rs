@@ -76,3 +76,68 @@ async fn auth_fails_with_bad_token() {
     assert!(err.to_string().contains("auth_invalid"), "got: {err}");
     let _ = server.await;
 }
+
+#[tokio::test]
+async fn sends_turn_on_and_receives_result() {
+    use artnet_to_hass::ha_client::{connect_and_authenticate, HaConnection};
+
+    let (url, server) = start_stub_ha(|mut ws| async move {
+        // Expect a call_service message and respond with success.
+        let frame = ws.next().await.unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(v["type"], "call_service");
+        assert_eq!(v["domain"], "light");
+        assert_eq!(v["service"], "turn_on");
+        assert_eq!(v["target"]["entity_id"], serde_json::json!(["light.a"]));
+        assert_eq!(
+            v["service_data"]["rgb_color"],
+            serde_json::json!([10, 20, 30])
+        );
+        let id = v["id"].as_u64().unwrap();
+        ws.send(Message::Text(
+            serde_json::json!({"id": id, "type": "result", "success": true, "result": null})
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+    })
+    .await;
+
+    let ws = connect_and_authenticate(&url, "valid-token").await.unwrap();
+    let conn = HaConnection::new(ws);
+    let ok = conn
+        .turn_on(&vec!["light.a".into()], (10, 20, 30))
+        .await
+        .unwrap();
+    assert!(ok);
+
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn send_reports_false_on_ha_failure() {
+    use artnet_to_hass::ha_client::{connect_and_authenticate, HaConnection};
+
+    let (url, server) = start_stub_ha(|mut ws| async move {
+        let frame = ws.next().await.unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        let id = v["id"].as_u64().unwrap();
+        ws.send(Message::Text(
+            serde_json::json!({
+                "id": id, "type": "result", "success": false,
+                "error": {"code": "not_found", "message": "entity not found"}
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    })
+    .await;
+
+    let ws = connect_and_authenticate(&url, "valid-token").await.unwrap();
+    let conn = HaConnection::new(ws);
+    let ok = conn.turn_off(&vec!["light.nope".into()]).await.unwrap();
+    assert!(!ok);
+
+    let _ = server.await;
+}

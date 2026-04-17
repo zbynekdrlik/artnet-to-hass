@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -77,6 +79,73 @@ pub async fn connect_and_authenticate(url: &str, token: &str) -> Result<WsStream
             v.get("message").and_then(|m| m.as_str()).unwrap_or("")
         )),
         other => Err(anyhow!("unexpected auth response: {:?} — {v}", other)),
+    }
+}
+
+/// Send a pre-built message with the given id and await the matching `result`.
+/// Returns `Ok(true)` if HA reports success, `Ok(false)` if success=false, `Err` on I/O failure.
+pub async fn send_and_await_result(ws: &mut WsStream, msg: &serde_json::Value) -> Result<bool> {
+    let id = msg
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow!("message missing numeric id"))?;
+
+    ws.send(Message::Text(msg.to_string()))
+        .await
+        .context("send call_service")?;
+
+    // Read messages until we get a `result` with matching id.
+    // HA may send `event` messages between result frames; we ignore non-result.
+    loop {
+        let frame = ws
+            .next()
+            .await
+            .ok_or_else(|| anyhow!("WS closed while waiting for result id={id}"))?
+            .context("reading WS frame")?;
+        let text = match &frame {
+            Message::Text(t) => t.clone(),
+            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Close(_) => return Err(anyhow!("WS closed (close frame)")),
+            Message::Binary(_) => continue,
+            Message::Frame(_) => continue,
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).context("result not JSON")?;
+        if v.get("type").and_then(|t| t.as_str()) != Some("result") {
+            continue;
+        }
+        if v.get("id").and_then(|i| i.as_u64()) != Some(id) {
+            continue;
+        }
+        return Ok(v.get("success").and_then(|s| s.as_bool()).unwrap_or(false));
+    }
+}
+
+/// Owned, thread-safe HA connection plus id counter.
+pub struct HaConnection {
+    ws: Arc<Mutex<WsStream>>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl HaConnection {
+    pub fn new(ws: WsStream) -> Self {
+        Self {
+            ws: Arc::new(Mutex::new(ws)),
+            next_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+    fn next_id(&self) -> u64 {
+        self.next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+    pub async fn turn_on(&self, lights: &[String], rgb: (u8, u8, u8)) -> Result<bool> {
+        let msg = build_turn_on(self.next_id(), lights, rgb);
+        let mut ws = self.ws.lock().await;
+        send_and_await_result(&mut ws, &msg).await
+    }
+    pub async fn turn_off(&self, lights: &[String]) -> Result<bool> {
+        let msg = build_turn_off(self.next_id(), lights);
+        let mut ws = self.ws.lock().await;
+        send_and_await_result(&mut ws, &msg).await
     }
 }
 
