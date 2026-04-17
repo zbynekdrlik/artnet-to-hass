@@ -1,4 +1,6 @@
 #[allow(dead_code)]
+mod artnet;
+#[allow(dead_code)]
 mod config;
 
 fn main() {
