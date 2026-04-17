@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use artnet_to_hass::{artnet, bridge, config::Config, ha_client::ReconnectingHaClient};
 use tokio::signal;
 use tokio::sync::watch;
@@ -62,10 +62,17 @@ async fn main() -> Result<()> {
 
     // Wait for Ctrl-C or any task exiting.
     tokio::select! {
-        _ = signal::ctrl_c() => info!("shutdown signal received"),
-        _ = bridge_handle => error!("bridge task exited unexpectedly"),
-        _ = listener_handle => error!("listener task exited unexpectedly"),
+        _ = signal::ctrl_c() => {
+            info!("shutdown signal received");
+            Ok(())
+        }
+        _ = bridge_handle => {
+            error!("bridge task exited unexpectedly");
+            Err(anyhow!("bridge task exited"))
+        }
+        _ = listener_handle => {
+            error!("listener task exited unexpectedly");
+            Err(anyhow!("listener task exited"))
+        }
     }
-
-    Ok(())
 }

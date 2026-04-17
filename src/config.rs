@@ -80,12 +80,15 @@ mod tests {
         ]
     }
 
+    // Serializes env mutations across tests so `cargo test` (which runs tests in
+    // parallel by default) doesn't race on process-global state.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn with_env<F, T>(vars: &[(&str, String)], f: F) -> T
     where
         F: FnOnce() -> T,
     {
-        // SAFETY: tests in this module are serialized by running under `--test-threads=1`
-        // in the specific test commands in the plan. We don't rely on process isolation.
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let keys = [
             "HA_URL",
             "HA_TOKEN",
