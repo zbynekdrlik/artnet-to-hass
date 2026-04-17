@@ -106,7 +106,7 @@ async fn sends_turn_on_and_receives_result() {
     let ws = connect_and_authenticate(&url, "valid-token").await.unwrap();
     let conn = HaConnection::new(ws);
     let ok = conn
-        .turn_on(&vec!["light.a".into()], (10, 20, 30))
+        .turn_on(&["light.a".into()], (10, 20, 30))
         .await
         .unwrap();
     assert!(ok);
@@ -136,7 +136,7 @@ async fn send_reports_false_on_ha_failure() {
 
     let ws = connect_and_authenticate(&url, "valid-token").await.unwrap();
     let conn = HaConnection::new(ws);
-    let ok = conn.turn_off(&vec!["light.nope".into()]).await.unwrap();
+    let ok = conn.turn_off(&["light.nope".into()]).await.unwrap();
     assert!(!ok);
 
     let _ = server.await;

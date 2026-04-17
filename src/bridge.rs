@@ -81,11 +81,11 @@ mod tests {
         });
         tx.send(Some((1, 2, 3))).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(tx);
+        let _ = h.await;
         let calls = ha.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, Call::On(1, 2, 3));
-        drop(tx);
-        let _ = h.await;
     }
 
     #[tokio::test]
@@ -98,11 +98,11 @@ mod tests {
         });
         tx.send(Some((0, 0, 0))).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(tx);
+        let _ = h.await;
         let calls = ha.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, Call::Off);
-        drop(tx);
-        let _ = h.await;
     }
 
     #[tokio::test]
@@ -120,10 +120,10 @@ mod tests {
             tx.send(Some((5, 5, 5))).unwrap();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let calls = ha.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "expected 1 call, got {:?}", *calls);
         drop(tx);
         let _ = h.await;
+        let calls = ha.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "expected 1 call, got {:?}", *calls);
     }
 
     #[tokio::test]
@@ -142,6 +142,8 @@ mod tests {
         tx.send(Some((3, 0, 0))).unwrap();
         // Give time for bridge to process under the 100 ms cap.
         tokio::time::sleep(Duration::from_millis(350)).await;
+        drop(tx);
+        let _ = h.await;
         let calls = ha.calls.lock().unwrap();
         // We expect at least 2 calls, spaced >= 100 ms apart.
         assert!(calls.len() >= 2, "got {:?}", *calls);
@@ -149,8 +151,6 @@ mod tests {
             let gap = w[1].0.duration_since(w[0].0);
             assert!(gap >= Duration::from_millis(95), "gap {:?} too small", gap);
         }
-        drop(tx);
-        let _ = h.await;
     }
 
     #[tokio::test]
@@ -168,9 +168,9 @@ mod tests {
         // so this must be attempted.
         tx.send(Some((7, 7, 7))).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let calls = ha.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
         drop(tx);
         let _ = h.await;
+        let calls = ha.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
     }
 }
