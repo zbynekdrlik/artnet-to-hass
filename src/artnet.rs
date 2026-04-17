@@ -49,6 +49,46 @@ pub fn parse_artdmx(buf: &[u8], universe: u16, rgb_start_channel: u16) -> Option
     ))
 }
 
+use std::net::SocketAddr;
+use tokio::net::UdpSocket;
+use tokio::sync::watch;
+use tracing::{debug, trace, warn};
+
+/// Spawned as a task. Binds a UDP socket, parses ArtDmx, publishes RGB to the watch.
+/// Returns only on fatal error (bind failure or socket broken beyond recovery).
+pub async fn run_listener(
+    bind: SocketAddr,
+    universe: u16,
+    rgb_start_channel: u16,
+    tx: watch::Sender<Option<(u8, u8, u8)>>,
+) -> anyhow::Result<()> {
+    let sock = UdpSocket::bind(bind)
+        .await
+        .map_err(|e| anyhow::anyhow!("Art-Net UDP bind to {bind} failed: {e}"))?;
+    tracing::info!("Art-Net listener bound to {bind}, universe {universe}");
+
+    let mut buf = vec![0u8; 1500];
+    loop {
+        let (n, from) = match sock.recv_from(&mut buf).await {
+            Ok(x) => x,
+            Err(e) => {
+                warn!("Art-Net recv error: {e}");
+                continue;
+            }
+        };
+        trace!("Art-Net packet from {from}, {n} bytes");
+        if let Some(rgb) = parse_artdmx(&buf[..n], universe, rgb_start_channel) {
+            debug!("Art-Net RGB received: {:?}", rgb);
+            // watch::send errors only if all receivers dropped — treat as fatal.
+            if tx.send(Some(rgb)).is_err() {
+                return Err(anyhow::anyhow!(
+                    "watch receiver dropped; shutting down listener"
+                ));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

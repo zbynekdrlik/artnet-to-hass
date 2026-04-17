@@ -5,6 +5,14 @@ edition = "2021"
 description = "Art-Net DMX to Home Assistant bridge for live lighting"
 license = "MIT"
 
+[lib]
+name = "artnet_to_hass"
+path = "src/lib.rs"
+
+[[bin]]
+name = "artnet-to-hass"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal"] }
 tokio-tungstenite = "0.24"
