@@ -1,11 +1,14 @@
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tracing::{error, info, warn};
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -146,6 +149,114 @@ impl HaConnection {
         let msg = build_turn_off(self.next_id(), lights);
         let mut ws = self.ws.lock().await;
         send_and_await_result(&mut ws, &msg).await
+    }
+}
+
+#[async_trait]
+pub trait HaClient: Send + Sync {
+    async fn turn_on(&self, rgb: (u8, u8, u8)) -> Result<()>;
+    async fn turn_off(&self) -> Result<()>;
+}
+
+/// A long-lived HA client that maintains a WS connection and reconnects on failure.
+///
+/// Send operations return `Err` immediately when disconnected — no queueing.
+/// A background task owns the reconnect loop.
+pub struct ReconnectingHaClient {
+    lights: Vec<String>,
+    conn: Arc<RwLock<Option<HaConnection>>>,
+}
+
+impl ReconnectingHaClient {
+    /// Spawn a background task that connects, authenticates, and reconnects forever.
+    /// Returns the client; the connection becomes available asynchronously.
+    pub fn spawn(url: String, token: String, lights: Vec<String>) -> Arc<Self> {
+        let client = Arc::new(Self {
+            lights,
+            conn: Arc::new(RwLock::new(None)),
+        });
+        let bg = client.clone();
+        tokio::spawn(async move {
+            bg.run_reconnect_loop(url, token).await;
+        });
+        client
+    }
+
+    async fn run_reconnect_loop(self: Arc<Self>, url: String, token: String) {
+        let mut backoff = Duration::from_secs(1);
+        const MAX_BACKOFF: Duration = Duration::from_secs(30);
+        loop {
+            info!("HA: connecting to {}", url);
+            match connect_and_authenticate(&url, &token).await {
+                Ok(ws) => {
+                    info!("HA: authenticated");
+                    *self.conn.write().await = Some(HaConnection::new(ws));
+                    backoff = Duration::from_secs(1);
+                    // Hold here until the next send fails. We detect that by
+                    // clearing `conn` from within the send path and observing the
+                    // state change. Simple approach: poll.
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        if self.conn.read().await.is_none() {
+                            break;
+                        }
+                    }
+                    warn!("HA: connection lost, will reconnect");
+                }
+                Err(e) if is_fatal_auth(&e) => {
+                    error!("HA: fatal auth failure, exiting: {e}");
+                    std::process::exit(2);
+                }
+                Err(e) => {
+                    warn!("HA: connect failed ({e}), retrying in {:?}", backoff);
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                }
+            }
+        }
+    }
+
+    async fn invalidate(&self) {
+        *self.conn.write().await = None;
+    }
+}
+
+fn is_fatal_auth(e: &anyhow::Error) -> bool {
+    e.to_string().contains("auth_invalid")
+}
+
+#[async_trait]
+impl HaClient for ReconnectingHaClient {
+    async fn turn_on(&self, rgb: (u8, u8, u8)) -> Result<()> {
+        let guard = self.conn.read().await;
+        let Some(conn) = guard.as_ref() else {
+            return Err(anyhow!("HA disconnected"));
+        };
+        match conn.turn_on(&self.lights, rgb).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(anyhow!("HA returned success=false for turn_on")),
+            Err(e) => {
+                drop(guard);
+                self.invalidate().await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn turn_off(&self) -> Result<()> {
+        let guard = self.conn.read().await;
+        let Some(conn) = guard.as_ref() else {
+            return Err(anyhow!("HA disconnected"));
+        };
+        match conn.turn_off(&self.lights).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(anyhow!("HA returned success=false for turn_off")),
+            Err(e) => {
+                drop(guard);
+                self.invalidate().await;
+                Err(e)
+            }
+        }
     }
 }
 
