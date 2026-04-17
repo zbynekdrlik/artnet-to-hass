@@ -150,4 +150,21 @@ mod tests {
         // With declared length 2, channels 1..=3 are not covered.
         assert_eq!(parse_artdmx(&pkt, 0, 1), None);
     }
+
+    #[test]
+    fn rejects_declared_length_beyond_buffer() {
+        // Sender claims 100 payload bytes but only 2 are actually present.
+        // Simulates a truncated UDP datagram.
+        let mut pkt = build_artdmx(0, &[10u8, 20]);
+        pkt[16] = 0;
+        pkt[17] = 100;
+        assert_eq!(parse_artdmx(&pkt, 0, 1), None);
+    }
+
+    #[test]
+    fn rejects_zero_start_channel() {
+        // rgb_start_channel is 1-indexed; 0 is always invalid.
+        let pkt = build_artdmx(0, &vec![0u8; 512]);
+        assert_eq!(parse_artdmx(&pkt, 0, 0), None);
+    }
 }
