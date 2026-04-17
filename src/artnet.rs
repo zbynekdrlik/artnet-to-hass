@@ -1,3 +1,8 @@
+use std::net::SocketAddr;
+use tokio::net::UdpSocket;
+use tokio::sync::watch;
+use tracing::{debug, info, trace, warn};
+
 /// Parse an ArtDmx packet and extract an RGB triplet from the configured start channel.
 ///
 /// Returns `Some((r, g, b))` only for valid ArtDmx packets on the matching universe.
@@ -49,11 +54,6 @@ pub fn parse_artdmx(buf: &[u8], universe: u16, rgb_start_channel: u16) -> Option
     ))
 }
 
-use std::net::SocketAddr;
-use tokio::net::UdpSocket;
-use tokio::sync::watch;
-use tracing::{debug, trace, warn};
-
 /// Spawned as a task. Binds a UDP socket, parses ArtDmx, publishes RGB to the watch.
 /// Returns only on fatal error (bind failure or socket broken beyond recovery).
 pub async fn run_listener(
@@ -65,7 +65,7 @@ pub async fn run_listener(
     let sock = UdpSocket::bind(bind)
         .await
         .map_err(|e| anyhow::anyhow!("Art-Net UDP bind to {bind} failed: {e}"))?;
-    tracing::info!("Art-Net listener bound to {bind}, universe {universe}");
+    info!("Art-Net listener bound to {bind}, universe {universe}");
 
     let mut buf = vec![0u8; 1500];
     loop {
