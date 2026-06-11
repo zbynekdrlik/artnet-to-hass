@@ -203,8 +203,7 @@ async fn send_errors_when_result_never_arrives() {
     .await;
 
     server.abort();
-    let inner = result.expect(
-        "turn_on hung past 15s waiting for a result frame — missing internal timeout",
-    );
+    let inner = result
+        .expect("turn_on hung past 15s waiting for a result frame — missing internal timeout");
     assert!(inner.is_err(), "expected Err when result never arrives");
 }
