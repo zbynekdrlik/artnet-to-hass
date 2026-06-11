@@ -141,3 +141,70 @@ async fn send_reports_false_on_ha_failure() {
 
     let _ = server.await;
 }
+
+/// Regression test for the 2026-05-30 production wedge: a server that accepts
+/// TCP but never completes the WebSocket/auth handshake hung
+/// `connect_and_authenticate` forever, freezing the reconnect loop for 12 days.
+/// The client must return Err on its own within its internal timeout.
+#[tokio::test]
+async fn connect_errors_against_unresponsive_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("ws://{addr}/api/websocket");
+
+    // Accept connections, hold them open, never respond.
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let _hold = stream;
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+        }
+    });
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        artnet_to_hass::ha_client::connect_and_authenticate(&url, "any-token"),
+    )
+    .await;
+
+    server.abort();
+    let inner = result.expect(
+        "connect_and_authenticate hung past 15s — missing internal timeout \
+         (regression of the 2026-05-30 production wedge)",
+    );
+    assert!(inner.is_err(), "expected Err from unresponsive server");
+}
+
+/// Same hang class on the send path: server auths fine but never answers a
+/// call_service. `turn_on` must return Err on its own, so the reconnect logic
+/// can invalidate the connection instead of blocking forever.
+#[tokio::test]
+async fn send_errors_when_result_never_arrives() {
+    use artnet_to_hass::ha_client::{connect_and_authenticate, HaConnection};
+
+    let (url, server) = start_stub_ha(|mut ws| async move {
+        // Read the call_service but never reply; keep the socket open.
+        let _ = ws.next().await;
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    })
+    .await;
+
+    let ws = connect_and_authenticate(&url, "valid-token").await.unwrap();
+    let conn = HaConnection::new(ws);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        conn.turn_on(&["light.a".into()], (1, 2, 3)),
+    )
+    .await;
+
+    server.abort();
+    let inner = result.expect(
+        "turn_on hung past 15s waiting for a result frame — missing internal timeout",
+    );
+    assert!(inner.is_err(), "expected Err when result never arrives");
+}
