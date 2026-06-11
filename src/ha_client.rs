@@ -40,11 +40,28 @@ pub fn build_auth(token: &str) -> Value {
     json!({"type": "auth", "access_token": token})
 }
 
+/// Hard cap on the full connect + auth handshake. Without this, a peer that
+/// accepts TCP but never answers wedges the reconnect loop forever (the
+/// 2026-05-30 production incident).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Hard cap on waiting for HA's `result` frame after a call_service send.
+const RESULT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Connect to HA and perform the auth handshake. Returns the authenticated WS stream.
 ///
 /// HA sends `auth_required` first, then we send `auth`, then HA responds `auth_ok`
-/// or `auth_invalid`. `auth_invalid` is fatal.
+/// or `auth_invalid`. `auth_invalid` is fatal. The whole sequence is bounded by
+/// [`CONNECT_TIMEOUT`] — on expiry an `Err` is returned and the caller retries.
 pub async fn connect_and_authenticate(url: &str, token: &str) -> Result<WsStream> {
+    tokio::time::timeout(CONNECT_TIMEOUT, connect_and_authenticate_inner(url, token))
+        .await
+        .map_err(|_| {
+            anyhow!("timed out after {CONNECT_TIMEOUT:?} connecting/authenticating to {url}")
+        })?
+}
+
+async fn connect_and_authenticate_inner(url: &str, token: &str) -> Result<WsStream> {
     let (mut ws, _resp) = tokio_tungstenite::connect_async(url)
         .await
         .with_context(|| format!("connecting to {url}"))?;
@@ -87,7 +104,15 @@ pub async fn connect_and_authenticate(url: &str, token: &str) -> Result<WsStream
 
 /// Send a pre-built message with the given id and await the matching `result`.
 /// Returns `Ok(true)` if HA reports success, `Ok(false)` if success=false, `Err` on I/O failure.
+/// Bounded by [`RESULT_TIMEOUT`] so a half-dead connection surfaces as `Err`
+/// (triggering invalidate + reconnect) instead of blocking the bridge forever.
 pub async fn send_and_await_result(ws: &mut WsStream, msg: &serde_json::Value) -> Result<bool> {
+    tokio::time::timeout(RESULT_TIMEOUT, send_and_await_result_inner(ws, msg))
+        .await
+        .map_err(|_| anyhow!("timed out after {RESULT_TIMEOUT:?} waiting for HA result"))?
+}
+
+async fn send_and_await_result_inner(ws: &mut WsStream, msg: &serde_json::Value) -> Result<bool> {
     let id = msg
         .get("id")
         .and_then(|v| v.as_u64())
